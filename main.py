@@ -1,9 +1,10 @@
 """
 Task API — a small to-do list served over HTTP.
 
-Stage 4: full CRUD. All four operations are here now — create, read, update,
-delete — each mapped onto the HTTP method that already means it, and each
-answering with the status code that says what happened.
+Stage 5: the API documents itself. FastAPI reads the type hints, the models and
+the docstrings below and builds an OpenAPI description from them, which Swagger
+UI renders as a live, clickable page at http://localhost:8000/docs — no
+hand-written docs to fall out of date.
 
 Run it with:
     .venv\\Scripts\\python -m uvicorn main:app --reload
@@ -14,13 +15,37 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 app = FastAPI(
     title="Task API",
     version="1.0",
-    description="A tiny to-do list API. Data lives in memory and dies on restart.",
+    description=(
+        "A tiny to-do list API, built as an exercise in CRUD over HTTP.\n\n"
+        "Tasks are held in a plain Python list inside the running process, so "
+        "**everything is lost when the server restarts**. That is intentional: "
+        "it is what 'no database' actually means."
+    ),
+    openapi_tags=[
+        {"name": "meta", "description": "What this API is, and whether it is alive."},
+        {"name": "tasks", "description": "Create, read, update and delete tasks."},
+    ],
 )
+
+
+# Reusable Swagger documentation for the two error shapes this API returns.
+NOT_FOUND = {
+    "description": "No task has that id",
+    "content": {"application/json": {"example": {"error": "Task 99 not found"}}},
+}
+BAD_REQUEST = {
+    "description": "The request body was missing or malformed",
+    "content": {
+        "application/json": {
+            "example": {"error": "Field 'title' is required and cannot be empty"}
+        }
+    },
+}
 
 
 # --------------------------------------------------------------------------
@@ -64,15 +89,26 @@ def next_id() -> int:
 
 
 class TaskCreate(BaseModel):
-    title: Optional[str] = None
+    """What a client sends to create a task: a title, and nothing else."""
+
+    title: Optional[str] = Field(default=None, examples=["Buy milk"])
 
 
 class TaskUpdate(BaseModel):
     """An update may carry a new title, a new `done` value, or both. Sending
     neither is a mistake worth reporting rather than a no-op to shrug at."""
 
-    title: Optional[str] = None
-    done: Optional[bool] = None
+    title: Optional[str] = Field(default=None, examples=["Buy oat milk"])
+    done: Optional[bool] = Field(default=None, examples=[True])
+
+
+class Task(BaseModel):
+    """What the API sends back. Declaring it gives Swagger a real schema to
+    show instead of an anonymous blob."""
+
+    id: int = Field(examples=[1])
+    title: str = Field(examples=["Buy milk"])
+    done: bool = Field(examples=[False])
 
 
 # --------------------------------------------------------------------------
@@ -124,14 +160,25 @@ def health():
 # --------------------------------------------------------------------------
 
 
-@app.get("/tasks", summary="List every task", tags=["tasks"])
+@app.get(
+    "/tasks",
+    response_model=list[Task],
+    summary="List every task",
+    tags=["tasks"],
+)
 def list_tasks():
     """Return the whole list. An empty list is a valid answer here — it means
     'there are no tasks', which is different from 'that task doesn't exist'."""
     return tasks
 
 
-@app.get("/tasks/{task_id}", summary="Get one task by id", tags=["tasks"])
+@app.get(
+    "/tasks/{task_id}",
+    response_model=Task,
+    responses={404: NOT_FOUND},
+    summary="Get one task by id",
+    tags=["tasks"],
+)
 def get_task(task_id: int):
     """Return a single task, or 404 if no task has that id.
 
@@ -148,7 +195,14 @@ def get_task(task_id: int):
 # --------------------------------------------------------------------------
 
 
-@app.post("/tasks", status_code=201, summary="Create a task", tags=["tasks"])
+@app.post(
+    "/tasks",
+    status_code=201,
+    response_model=Task,
+    responses={400: BAD_REQUEST},
+    summary="Create a task",
+    tags=["tasks"],
+)
 def create_task(payload: TaskCreate):
     """Create a task from a title and return it with 201 Created.
 
@@ -169,7 +223,13 @@ def create_task(payload: TaskCreate):
 # --------------------------------------------------------------------------
 
 
-@app.put("/tasks/{task_id}", summary="Update a task", tags=["tasks"])
+@app.put(
+    "/tasks/{task_id}",
+    response_model=Task,
+    responses={400: BAD_REQUEST, 404: NOT_FOUND},
+    summary="Update a task",
+    tags=["tasks"],
+)
 def update_task(task_id: int, payload: TaskUpdate):
     """Update a task's title, its done flag, or both, and return the result.
 
@@ -202,6 +262,7 @@ def update_task(task_id: int, payload: TaskUpdate):
     "/tasks/{task_id}",
     status_code=204,
     response_class=Response,
+    responses={204: {"description": "Deleted. No content."}, 404: NOT_FOUND},
     summary="Delete a task",
     tags=["tasks"],
 )
