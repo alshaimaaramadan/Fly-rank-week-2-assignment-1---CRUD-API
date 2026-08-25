@@ -10,9 +10,10 @@ Run it with:
     .venv\\Scripts\\python -m uvicorn main:app --reload
 """
 
+import copy
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -55,11 +56,15 @@ BAD_REQUEST = {
 # means every task is lost the moment the process stops. That is deliberate
 # for this exercise — see the "mortality experiment" in the README.
 
-tasks = [
+SEED_TASKS = [
     {"id": 1, "title": "Read the assignment", "done": True},
     {"id": 2, "title": "Build the API", "done": False},
     {"id": 3, "title": "Write the README", "done": False},
 ]
+
+# copy.deepcopy so that editing a task at runtime doesn't quietly rewrite the
+# seed data that POST /reset is supposed to restore.
+tasks = copy.deepcopy(SEED_TASKS)
 
 
 def find_task(task_id: int):
@@ -166,10 +171,33 @@ def health():
     summary="List every task",
     tags=["tasks"],
 )
-def list_tasks():
-    """Return the whole list. An empty list is a valid answer here — it means
-    'there are no tasks', which is different from 'that task doesn't exist'."""
-    return tasks
+def list_tasks(
+    done: Optional[bool] = Query(
+        default=None,
+        description="Keep only finished (true) or unfinished (false) tasks.",
+    ),
+    search: Optional[str] = Query(
+        default=None,
+        description="Keep only tasks whose title contains this text (case-insensitive).",
+    ),
+):
+    """Return the whole list, narrowed by the optional filters.
+
+    Both filters are query parameters, and they compose: `?done=false&search=milk`
+    means "unfinished tasks about milk". With neither, you get everything.
+
+    An empty list is a valid answer here — it means 'nothing matched', which is
+    different from 'that task doesn't exist'."""
+    results = tasks
+
+    if done is not None:
+        results = [task for task in results if task["done"] == done]
+
+    if search is not None:
+        needle = search.strip().lower()
+        results = [task for task in results if needle in task["title"].lower()]
+
+    return results
 
 
 @app.get(
@@ -278,3 +306,36 @@ def delete_task(task_id: int):
 
     tasks.remove(task)
     return Response(status_code=204)
+
+
+# --------------------------------------------------------------------------
+# Extras
+# --------------------------------------------------------------------------
+# Filtering and search live on GET /tasks above, as query parameters. The two
+# endpoints below round the API out: one that computes rather than stores, and
+# one that puts the list back to a known state so a demo can be repeated.
+
+
+@app.get("/stats", summary="Count tasks by status", tags=["meta"])
+def stats():
+    """Summarise the list: how many tasks in total, how many done, how many open.
+
+    The client could count these itself from GET /tasks, but doing it here is
+    the point — an API can answer questions, not just hand over rows."""
+    done_count = sum(1 for task in tasks if task["done"])
+    return {
+        "total": len(tasks),
+        "done": done_count,
+        "open": len(tasks) - done_count,
+    }
+
+
+@app.post("/reset", summary="Restore the seed tasks", tags=["meta"])
+def reset():
+    """Throw away every task and put the three seed tasks back.
+
+    `tasks[:] = ...` replaces the contents of the existing list rather than
+    rebinding the name to a new one, so every other reference to `tasks` in
+    this module keeps pointing at the live data."""
+    tasks[:] = copy.deepcopy(SEED_TASKS)
+    return {"message": "Tasks reset to the original 3 seed tasks", "tasks": tasks}
