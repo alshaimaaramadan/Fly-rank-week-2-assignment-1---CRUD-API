@@ -1,16 +1,20 @@
 """
 Task API — a small to-do list served over HTTP.
 
-Stage 2: the API now has data. Three example tasks live in a plain Python list,
-and two endpoints read from it: one for the whole list, one for a single task
-by id. Asking for a task that doesn't exist is an error, not an empty answer.
+Stage 3: the API now accepts new tasks. The client sends a title; the server
+decides everything else — the id, the starting `done` value, and whether the
+request was acceptable at all. The server never trusts the client.
 
 Run it with:
     .venv\\Scripts\\python -m uvicorn main:app --reload
 """
 
+from typing import Optional
+
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 app = FastAPI(
     title="Task API",
@@ -41,6 +45,28 @@ def find_task(task_id: int):
     return None
 
 
+def next_id() -> int:
+    """Pick the next free id.
+
+    Deliberately max(existing) + 1 rather than len(tasks) + 1. After deleting a
+    task the length drops, so len()+1 would hand out an id that is already in
+    use — two tasks with the same id, and the bug shows up much later."""
+    return max((task["id"] for task in tasks), default=0) + 1
+
+
+# --------------------------------------------------------------------------
+# Request bodies
+# --------------------------------------------------------------------------
+# `title` is declared Optional on purpose. If Pydantic enforced it, a missing
+# title would come back as HTTP 422; this API is specified to answer 400. So
+# the field is optional to Pydantic and checked by hand in the handler below,
+# where we control the status code and the message.
+
+
+class TaskCreate(BaseModel):
+    title: Optional[str] = None
+
+
 # --------------------------------------------------------------------------
 # Error shape
 # --------------------------------------------------------------------------
@@ -53,6 +79,15 @@ def find_task(task_id: int):
 @app.exception_handler(HTTPException)
 def http_exception_handler(request: Request, exc: HTTPException):
     return JSONResponse(status_code=exc.status_code, content={"error": exc.detail})
+
+
+@app.exception_handler(RequestValidationError)
+def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Catch bodies so malformed that Pydantic rejects them before our code
+    runs — a JSON syntax error, or `title` sent as a list. FastAPI's default is
+    422; a bad request from the client is a 400 as far as this API is
+    concerned, and it should look like every other error it returns."""
+    return JSONResponse(status_code=400, content={"error": "Invalid request body"})
 
 
 # --------------------------------------------------------------------------
@@ -97,4 +132,25 @@ def get_task(task_id: int):
     task = find_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    return task
+
+
+# --------------------------------------------------------------------------
+# Stage 3 — create
+# --------------------------------------------------------------------------
+
+
+@app.post("/tasks", status_code=201, summary="Create a task", tags=["tasks"])
+def create_task(payload: TaskCreate):
+    """Create a task from a title and return it with 201 Created.
+
+    The client supplies only the title. The id and the starting `done` value
+    are the server's to decide — letting a client choose its own id is how you
+    end up with collisions and overwritten data."""
+    title = (payload.title or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Field 'title' is required and cannot be empty")
+
+    task = {"id": next_id(), "title": title, "done": False}
+    tasks.append(task)
     return task
