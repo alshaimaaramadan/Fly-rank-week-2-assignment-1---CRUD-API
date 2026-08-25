@@ -1,9 +1,9 @@
 """
 Task API — a small to-do list served over HTTP.
 
-Stage 3: the API now accepts new tasks. The client sends a title; the server
-decides everything else — the id, the starting `done` value, and whether the
-request was acceptable at all. The server never trusts the client.
+Stage 4: full CRUD. All four operations are here now — create, read, update,
+delete — each mapped onto the HTTP method that already means it, and each
+answering with the status code that says what happened.
 
 Run it with:
     .venv\\Scripts\\python -m uvicorn main:app --reload
@@ -11,7 +11,7 @@ Run it with:
 
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -65,6 +65,14 @@ def next_id() -> int:
 
 class TaskCreate(BaseModel):
     title: Optional[str] = None
+
+
+class TaskUpdate(BaseModel):
+    """An update may carry a new title, a new `done` value, or both. Sending
+    neither is a mistake worth reporting rather than a no-op to shrug at."""
+
+    title: Optional[str] = None
+    done: Optional[bool] = None
 
 
 # --------------------------------------------------------------------------
@@ -154,3 +162,58 @@ def create_task(payload: TaskCreate):
     task = {"id": next_id(), "title": title, "done": False}
     tasks.append(task)
     return task
+
+
+# --------------------------------------------------------------------------
+# Stage 4 — update and delete
+# --------------------------------------------------------------------------
+
+
+@app.put("/tasks/{task_id}", summary="Update a task", tags=["tasks"])
+def update_task(task_id: int, payload: TaskUpdate):
+    """Update a task's title, its done flag, or both, and return the result.
+
+    Order matters: check that the task exists *before* judging the body, so a
+    request for task 99 gets told the task is missing rather than being
+    lectured about its fields."""
+    task = find_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+    if payload.title is None and payload.done is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide at least one of 'title' or 'done'",
+        )
+
+    if payload.title is not None:
+        title = payload.title.strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="Field 'title' cannot be empty")
+        task["title"] = title
+
+    if payload.done is not None:
+        task["done"] = payload.done
+
+    return task
+
+
+@app.delete(
+    "/tasks/{task_id}",
+    status_code=204,
+    response_class=Response,
+    summary="Delete a task",
+    tags=["tasks"],
+)
+def delete_task(task_id: int):
+    """Delete a task and return 204 No Content — success, nothing to say.
+
+    204 means the body must be genuinely empty, so we hand back a bare Response
+    rather than returning None and letting FastAPI serialise `null` into a body
+    the status code promised wouldn't be there."""
+    task = find_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+    tasks.remove(task)
+    return Response(status_code=204)
