@@ -15,6 +15,7 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -339,3 +340,45 @@ def reset():
     this module keeps pointing at the live data."""
     tasks[:] = copy.deepcopy(SEED_TASKS)
     return {"message": "Tasks reset to the original 3 seed tasks", "tasks": tasks}
+
+
+# --------------------------------------------------------------------------
+# Documentation accuracy
+# --------------------------------------------------------------------------
+
+
+def custom_openapi():
+    """Remove the 422 responses FastAPI documents automatically.
+
+    FastAPI adds a 422 to every operation that takes a request body or a typed
+    parameter, because that is what Pydantic would return on its own. This API
+    installs a RequestValidationError handler that turns those into 400, so a
+    422 can never actually come back. Leaving it in the docs would advertise a
+    status code this API never returns, and the two schemas describing its
+    shape would sit in Swagger's Schemas list describing nothing.
+    """
+    if app.openapi_schema:
+        return app.openapi_schema
+
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        tags=app.openapi_tags,
+        routes=app.routes,
+    )
+
+    for operations in schema.get("paths", {}).values():
+        for operation in operations.values():
+            operation.get("responses", {}).pop("422", None)
+
+    # Nothing references these once the 422s are gone.
+    schemas = schema.get("components", {}).get("schemas", {})
+    for name in ("HTTPValidationError", "ValidationError"):
+        schemas.pop(name, None)
+
+    app.openapi_schema = schema
+    return schema
+
+
+app.openapi = custom_openapi
